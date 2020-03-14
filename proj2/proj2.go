@@ -5,7 +5,7 @@ package proj2
 // imports it will break the autograder. We will be very upset.
 
 import (
-	// You neet to add with
+	// You need to add with:
 	// go get github.com/cs161-staff/userlib
 	"github.com/cs161-staff/userlib"
 
@@ -20,7 +20,7 @@ import (
 	// UUIDs are generated right based on the cryptographic PRNG
 	// so lets make life easier and use those too...
 	//
-	// You need to add with "go get github.com/google/uuid"
+	// You need to add with: go get github.com/google/uuid
 	"github.com/google/uuid"
 
 	// Useful for debug messages, or string manipulation for datastore keys.
@@ -82,10 +82,85 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 	return
 }
 
+/*
+TODO: implement private functions for server use
+Our implemntation makes use of a private data store which holds all data (encrypted) until
+a user requests it, at which point the server fetches the file and decrypts it then re-encrypts
+using the users public key and puts the encrypted file in the public datastore.
+
+classes:
+	Server: thing that holds the datastores and does actions required by the backend
+	File: stores the data, owner and list of users who have access
+
+Functions:
+	store_file(owner, shared_with, file_data, file_name):
+	get_file(requester, file_name):
+
+ */
+
+ type File struct{
+ 	data []byte
+ 	Name string
+ 	Id userlib.UUID
+ 	Owner userlib.UUID
+ 	Shared_with []userlib.UUID //needs to be modified later to share / revoke
+}
+
+func InitFile(filename string, file []byte, this_owner userlib.UUID, shared_list []userlib.UUID ) (filedataptr *File, err error) {
+	var this_file File
+	filedataptr = &this_file
+
+	//TODO: check, figure out errors
+	filedataptr.Name = filename
+	filedataptr.data = file
+	filedataptr.Id = uuid.New()
+	filedataptr.Owner = this_owner
+	filedataptr.Shared_with = shared_list
+
+	return &filedataptr, nil
+}
+
+ type Server struct{
+ 	private_ds_keys []userlib.UUID
+ 	public_ds_keys []userlib.UUID
+
+ }
+
+ func server_store_file(server *Server, owner *User, file []byte, string file_name, shared_with []userlib.UUID) {
+ 	//construct File datatype from info provied
+	file_to_store := InitFile(file_name, file, owner.UserID, shared_with) //modify file name to something like filename + username?
+ 	//encrypt using Servers key (symetric key encryption)
+	encrypted_file = nil  //idk how to do this
+ 	//store in the ds using userlib.DatastoreSet(key UUID, value []byte)
+ 	userlib.DatastoreSet(file_to_store.Id, file_to_store)
+ 	//return key it was stored under maybe...?
+
+ }
+
+ func server_move_to_public(requester *User, requested_file_name string) (location_in_public){
+ 	//if requested file name is not in requester.owned_by_me or requester.shared_with_me, return
+
+ 	//decrypt file using servers private_key. check that the file is ethier owned by requester
+ 	//or that requester.UserID in in decrypted_file.Shared_with
+
+ 	//if the above is true, re-encrypt the file using the requester.Public_key and store in datastore
+ 	// with random key.
+
+ 	//return key where the file is stored to the requested user
+ }
+
+
+
 // The structure definition for a user record
 type User struct {
 	Username string
-
+	password string
+	UserID userlib.UUID
+	Authenticated bool
+	owned_by_me map //key is filename value is uuid
+	shared_with_me map
+	Public_key userlib.PublicKeyType
+	private_key userlib.PrivateKeyType
 	// You can add other fields here if you want...
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
@@ -112,6 +187,9 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 
 	//TODO: This is a toy implementation.
 	userdata.Username = username
+	userdata.Password = password
+	userdata.Authenticated = false
+
 	//End of toy implementation
 
 	return &userdata, nil
