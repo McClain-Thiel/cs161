@@ -8,6 +8,8 @@ import (
 	// You need to add with:
 	// go get github.com/cs161-staff/userlib
 
+	"fmt"
+
 	"github.com/cs161-staff/userlib"
 
 	// Life is much easier with json:  You are
@@ -101,15 +103,22 @@ Functions:
 
 */
 
+type Blob struct {
+	JsonData []byte //holds the encrypted data of either a file or user instance
+	DataHMAC []byte //holds the HMAC of the encrypted data
+}
+
 // The structure definition for a user record
 type User struct {
-	Username      string
-	Salt          []byte
-	Password_hash []byte
-	Owned_files   map[string]string
-	MAC_List      [3][]byte
-	// shared_files map[string]string
-	// auth_flag bool
+	Username    string
+	MasterKey   []byte               //will be used to verify password and generate other keys for the user
+	LocationKey []byte               //will be used to find the location of the user in datastore
+	SymKey      []byte               //will be used as this user's symmetric key for encryption
+	HMACKey     []byte               //will be used as this user's HMACKey
+	PrivateKey  userlib.PKEDecKey    //will be used as this user's private key
+	DigSig      userlib.DSSignKey    //will be used to sign data from the user
+	OwnedFiles  map[string]uuid.UUID //{hashed filename: uuid (location in Datastore)} files owned by this user
+	SharedFiles map[string]uuid.UUID //{hashed filename: uuid (location in Datastore)} files shared with this user
 	// You can add other fields here if you want...
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
@@ -133,28 +142,54 @@ type User struct {
 //NEED TO MAKE SEPARATE KEYS
 func InitUser(username string, password string) (userdataptr *User, err error) {
 	// check if this username is already in use
-	_, exists := userlib.KeystoreGet(username)
+	_, exists := userlib.KeystoreGet(username + "_PKE")
 	if exists {
 		return nil, errors.New("This username already exists")
 	}
-	// generate keys
-	HMAC_key = userlib.HashKDF
-	// create a new instance of a User
+	// create a new instance of a user
 	var userdata User
 	userdataptr = &userdata
 	userdata.Username = username
-	userdata.Salt = userlib.RandomBytes(4)
-	userdata.Password_hash = userlib.Argon2Key([]byte(password), userdata.Salt, 4)
-	//TODO: deal with if any of these results in an error
-	userdata.MAC_List[0], _ = userlib.HMACEval([]byte(MASTER_KEY), []byte(username))
-	userdata.MAC_List[1], _ = userlib.HMACEval([]byte(MASTER_KEY), []byte(userdata.Salt))
-	userdata.MAC_List[2], _ = userlib.HMACEval([]byte(MASTER_KEY), []byte(userdata.Password_hash))
-	// userdata.MAC_List[3] = userlib.HMACEval([]byte(MASTER_KEY), []byte(username))
-	// encrypt and store this user profile inside of DataStore
-	data, _ = json.Marshal(userdata)
-	iv = userlib.RandomBytes(16)
-	encrypted = userlib.SymEnc([]byte(MASTER_KEY), iv, plaintext)
-	userlib.Datastore
+	userdata.OwnedFiles = make(map[string]uuid.UUID)
+	userdata.SharedFiles = make(map[string]uuid.UUID) //check this syntax
+	// generate the master key
+	MasterKey := userlib.Argon2Key([]byte(password), []byte(username), 16)
+	userdata.MasterKey = MasterKey
+	// generate keys
+	HMACKey, HMACError := userlib.HashKDF(MasterKey, []byte("HMAC"))
+	LocationKey, LocationError := userlib.HashKDF(MasterKey, []byte("Location"))
+	SymKey, SymError := userlib.HashKDF(MasterKey, []byte("Symmetric Encryption"))
+	PublicKeyEnc, PrivateKeyEnc, PKEError := userlib.PKEKeyGen()
+	PrivateKeyDS, PublicKeyDS, DSError := userlib.DSKeyGen()
+	//check for errors in key generation
+	if HMACError != nil || LocationError != nil || SymError != nil || PKEError != nil || DSError != nil {
+		return nil, errors.New("An error has occurred while generating the user's keys.")
+	}
+	//assign keys to userdata.Keys
+	userdata.HMACKey = HMACKey[:16]
+	userdata.LocationKey = LocationKey[:16]
+	userdata.SymKey = SymKey[:32]
+	userdata.PrivateKey = PrivateKeyEnc
+	userdata.DigSig = PrivateKeyDS
+	//store the public keys in keystore
+	userlib.KeystoreSet(username+"_PKE", PublicKeyEnc)
+	userlib.KeystoreSet(username+"_DS", PublicKeyDS)
+	// userdata is now complete, now we must instantiate a Blob for this user to store securely in datastore
+	var userblob Blob
+	marshalledData, marshallError := json.Marshal(userdata)
+	userblob.JsonData = userlib.SymEnc(userdata.SymKey, userlib.RandomBytes(16), marshalledData)
+	DataHMAC, MACError := userlib.HMACEval(userdata.HMACKey, userblob.JsonData)
+	userblob.DataHMAC = DataHMAC
+	//store the blob in Datastore
+	locationUUID, uuidError := uuid.FromBytes(userdata.LocationKey)
+	marshalledBlob, marshallBlobError := json.Marshal(userblob)
+	//check for errors in building blob intance
+	if marshallError != nil || MACError != nil || uuidError != nil || marshallBlobError != nil {
+		fmt.Println(marshallError, MACError, uuidError, marshallBlobError)
+		return nil, errors.New("An error has occured while encrypting the user information.")
+	}
+	userlib.DatastoreSet(locationUUID, marshalledBlob)
+	//return a pointer to the user
 	return &userdata, nil
 }
 
@@ -162,11 +197,50 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 // fail with an error if the user/password is invalid, or if the user
 // data was corrupted, or if the user can't be found.
 
-//'im drawing a blank here dawg, we gotta like unincrypt our shit'
+//'im drawing a blank here dawg, we gotta like unencrypt our shit'
 func GetUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
 	userdataptr = &userdata
-
+	//first check if the user exists
+	_, exists := userlib.KeystoreGet(username + "_PKE")
+	if !exists {
+		return nil, errors.New("The user cannot be found")
+	}
+	//now check if username and password are correct
+	//generate the user's master key
+	userMK := userlib.Argon2Key([]byte(password), []byte(username), 16)
+	//generate the user's location key
+	LocationKey, LocationError := userlib.HashKDF(userMK, []byte("Location"))
+	locationUUID, uuidError := uuid.FromBytes(LocationKey[:16])
+	//grab the blob from Datastore
+	marshalled, correctInfo := userlib.DatastoreGet(locationUUID)
+	if !correctInfo {
+		return nil, errors.New("The username and/or password is incorrect")
+	}
+	//now check that the user data has not been tampered with
+	//unmarshal the data
+	var unmarshalled Blob
+	marshalError1 := json.Unmarshal(marshalled, &unmarshalled)
+	//unravel unmarshalleded blob object
+	encryptedUser := unmarshalled.JsonData
+	reportedHMAC := unmarshalled.DataHMAC
+	//generate the user's HMACKey
+	HMACKey, HMACError := userlib.HashKDF(userMK, []byte("HMAC"))
+	//compute HMAC from unencryptedUser
+	actualHMAC, HMACGenError := userlib.HMACEval(HMACKey[:16], encryptedUser) //idk what this key is supposed to be
+	//compare to reportedHMAC
+	if !userlib.HMACEqual(reportedHMAC, actualHMAC) {
+		return nil, errors.New("User data has been tampered with")
+	}
+	//If we reach this point, our user data is good to go, so we can assign it to userdata
+	//generate the user's symmetric key
+	SymKey, SymError := userlib.HashKDF(userMK, []byte("Symmetric Encryption"))
+	//unencrypt then unmarshall the user data
+	unencryptedMarshalledUser := userlib.SymDec(SymKey[:32], encryptedUser)
+	unmarshalError2 := json.Unmarshal(unencryptedMarshalledUser, &userdata)
+	if LocationError != nil || uuidError != nil || HMACError != nil || HMACGenError != nil || SymError != nil || marshalError1 != nil || unmarshalError2 != nil {
+		return nil, errors.New("tuff shit. log off")
+	}
 	return userdataptr, nil
 }
 
