@@ -7,6 +7,7 @@ package proj2
 import (
 	// You need to add with:
 	// go get github.com/cs161-staff/userlib
+
 	"github.com/cs161-staff/userlib"
 
 	// Life is much easier with json:  You are
@@ -32,12 +33,14 @@ import (
 	// Optional. You can remove the "_" there, but please do not touch
 	// anything else within the import bracket.
 	_ "strconv"
-
 	// if you are looking for fmt, we don't give you fmt, but you can use userlib.DebugMsg.
 	// see someUsefulThings() below:
 )
 
-// This serves two purposes: 
+// hardcoded master key used for the
+const MASTER_KEY string = "jaredandmcclain!"
+
+// This serves two purposes:
 // a) It shows you some useful primitives, and
 // b) it suppresses warnings for items not being imported.
 // Of course, this function can be deleted.
@@ -68,7 +71,7 @@ func someUsefulThings() {
 	// And a random RSA key.  In this case, ignoring the error
 	// return value
 	var pk userlib.PKEEncKey
-        var sk userlib.PKEDecKey
+	var sk userlib.PKEDecKey
 	pk, sk, _ = userlib.PKEKeyGen()
 	userlib.DebugMsg("Key is %v, %v", pk, sk)
 }
@@ -96,71 +99,17 @@ Functions:
 	store_file(owner, shared_with, file_data, file_name):
 	get_file(requester, file_name):
 
- */
-
- type File struct{
- 	data []byte
- 	Name string
- 	Id userlib.UUID
- 	Owner userlib.UUID
- 	Shared_with []userlib.UUID //needs to be modified later to share / revoke
-}
-
-func InitFile(filename string, file []byte, this_owner userlib.UUID, shared_list []userlib.UUID ) (filedataptr *File, err error) {
-	var this_file File
-	filedataptr = &this_file
-
-	//TODO: check, figure out errors
-	filedataptr.Name = filename
-	filedataptr.data = file
-	filedataptr.Id = uuid.New()
-	filedataptr.Owner = this_owner
-	filedataptr.Shared_with = shared_list
-
-	return &filedataptr, nil
-}
-
- type Server struct{
- 	private_ds_keys []userlib.UUID
- 	public_ds_keys []userlib.UUID
-
- }
-
- func server_store_file(server *Server, owner *User, file []byte, string file_name, shared_with []userlib.UUID) {
- 	//construct File datatype from info provied
-	file_to_store := InitFile(file_name, file, owner.UserID, shared_with) //modify file name to something like filename + username?
- 	//encrypt using Servers key (symetric key encryption)
-	encrypted_file = nil  //idk how to do this
- 	//store in the ds using userlib.DatastoreSet(key UUID, value []byte)
- 	userlib.DatastoreSet(file_to_store.Id, file_to_store)
- 	//return key it was stored under maybe...?
-
- }
-
- func server_move_to_public(requester *User, requested_file_name string) (location_in_public){
- 	//if requested file name is not in requester.owned_by_me or requester.shared_with_me, return
-
- 	//decrypt file using servers private_key. check that the file is ethier owned by requester
- 	//or that requester.UserID in in decrypted_file.Shared_with
-
- 	//if the above is true, re-encrypt the file using the requester.Public_key and store in datastore
- 	// with random key.
-
- 	//return key where the file is stored to the requested user
- }
-
-
+*/
 
 // The structure definition for a user record
 type User struct {
-	Username string
-	password string
-	UserID userlib.UUID
-	Authenticated bool
-	owned_by_me map //key is filename value is uuid
-	shared_with_me map
-	Public_key userlib.PublicKeyType
-	private_key userlib.PrivateKeyType
+	Username      string
+	Salt          []byte
+	Password_hash []byte
+	Owned_files   map[string]string
+	MAC_List      [3][]byte
+	// shared_files map[string]string
+	// auth_flag bool
 	// You can add other fields here if you want...
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
@@ -179,25 +128,41 @@ type User struct {
 // keystore and the datastore functions in the userlib library.
 
 // You can assume the password has strong entropy, EXCEPT
-// the attackers may possess a precomputed tables containing 
+// the attackers may possess a precomputed tables containing
 // hashes of common passwords downloaded from the internet.
+//NEED TO MAKE SEPARATE KEYS
 func InitUser(username string, password string) (userdataptr *User, err error) {
+	// check if this username is already in use
+	_, exists := userlib.KeystoreGet(username)
+	if exists {
+		return nil, errors.New("This username already exists")
+	}
+	// generate keys
+	HMAC_key = userlib.HashKDF
+	// create a new instance of a User
 	var userdata User
 	userdataptr = &userdata
-
-	//TODO: This is a toy implementation.
 	userdata.Username = username
-	userdata.Password = password
-	userdata.Authenticated = false
-
-	//End of toy implementation
-
+	userdata.Salt = userlib.RandomBytes(4)
+	userdata.Password_hash = userlib.Argon2Key([]byte(password), userdata.Salt, 4)
+	//TODO: deal with if any of these results in an error
+	userdata.MAC_List[0], _ = userlib.HMACEval([]byte(MASTER_KEY), []byte(username))
+	userdata.MAC_List[1], _ = userlib.HMACEval([]byte(MASTER_KEY), []byte(userdata.Salt))
+	userdata.MAC_List[2], _ = userlib.HMACEval([]byte(MASTER_KEY), []byte(userdata.Password_hash))
+	// userdata.MAC_List[3] = userlib.HMACEval([]byte(MASTER_KEY), []byte(username))
+	// encrypt and store this user profile inside of DataStore
+	data, _ = json.Marshal(userdata)
+	iv = userlib.RandomBytes(16)
+	encrypted = userlib.SymEnc([]byte(MASTER_KEY), iv, plaintext)
+	userlib.Datastore
 	return &userdata, nil
 }
 
 // This fetches the user information from the Datastore.  It should
 // fail with an error if the user/password is invalid, or if the user
 // data was corrupted, or if the user can't be found.
+
+//'im drawing a blank here dawg, we gotta like unincrypt our shit'
 func GetUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
 	userdataptr = &userdata
@@ -207,7 +172,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 
 // This stores a file in the datastore.
 //
-// The plaintext of the filename + the plaintext and length of the filename 
+// The plaintext of the filename + the plaintext and length of the filename
 // should NOT be revealed to the datastore!
 func (userdata *User) StoreFile(filename string, data []byte) {
 
