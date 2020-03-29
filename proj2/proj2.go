@@ -106,6 +106,9 @@ Functions:
 type Blob struct {
 	JsonData []byte //holds the encrypted data of either a file or user instance
 	DataHMAC []byte //holds the HMAC of the encrypted data
+	//special attributes for dealing with files as opposed to users
+	Owner       User     //not correct data type possibly
+	Shared_with []string //usernames...?
 }
 
 // The structure definition for a user record
