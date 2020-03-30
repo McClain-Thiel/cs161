@@ -312,7 +312,7 @@ func unmarshCheckUserBlob(id uuid.UUID, EncKey []byte, HMACKey []byte)(user User
 	//recompute HMAC based on data
 	data := obj.UserData
 	//marshalledData,m_err2 := json.Marshal(data)
-	computedHMAC,hmac_err := userlib.HMACEval(HMACKey, data) //
+	computedHMAC, hmac_err := userlib.HMACEval(HMACKey, data) 
 	/*if m_err2 != nil{
 		return user, errors.New("problem marshalling error when recomputing HMAC")
 	}*/
