@@ -90,6 +90,8 @@ func TestStorage(t *testing.T) {
 	}
 }
 
+/*
+
 func TestInvalidFile(t *testing.T) {
 	clear()
 	u, err := InitUser("alice", "fubar")
@@ -152,3 +154,108 @@ func TestShare(t *testing.T) {
 	}
 
 }
+
+*/
+
+func TestKeyGen(t *testing.T) {
+	clear()
+	username:= "jared"
+	//data := []byte("this might just not compile")
+	uuidBytes := userlib.RandomBytes(16)
+	//id, _ := uuid.FromBytes(uuidBytes)
+	token := newAccessToken(username, uuidBytes)
+	data := parseToken(username, token)
+	s := data[:16]//string version of rev_token
+	if string(s) != string(uuidBytes) {
+		t.Error("not the reverse")
+	}
+}
+
+/*func TestUnmarshalUserCheck(t *testing.T){
+	clear()
+	t.Log("Testing unmarshalling users: ")
+	//encrypt and store in the data store and generate hmacs
+	u, err := InitUser("alice", "fubar")
+	if err != nil{
+		t.Error("user init error")
+	}
+	locationUUID, uuidError := uuid.FromBytes(u.LocationKey)
+	if uuidError != nil{
+		t.Error("UuidError error")
+	}
+	hMACKey := u.HMACKey
+	symKey := u.SymKey
+	u2, e := unmarshCheckUserBlob(locationUUID, hMACKey, symKey)
+	if e != nil{
+		t.Error("UnmarshCheckUserBlob error", e)
+	}
+	if u2.Username != u.Username{
+		t.Error("two users did not have the same username")
+	}
+}
+/*
+func TestUnmarshalSentinelCheck(t *testing.T){
+	clear()
+	t.Log("Testing unmarshalling users: ")
+	//encrypt and store in the data store and generate hmacs
+	u, err := InitUser("alice", "fubar")
+	if err != nil{
+		t.Error("user init error")
+	}
+	locationUUID, uuidError := uuid.FromBytes(u.LocationKey)
+	if uuidError != nil{
+		t.Error("uuidError error")
+	}
+	hMACKey := u.HMACKey
+	symKey := u.SymKey
+	u2, e := UnmarshCheckSentinelBlob(locationUUID, hMACKey, symKey)
+	if e != nil{
+		t.Error("unmarshal error", e)
+	}
+	if u2.Username != u.Username{
+		t.Error("two users did not have the same username")
+	}
+}
+
+func TestUnmarshalNodeCheck(t *testing.T){
+	clear()
+	t.Log("testing unmarshalling users")
+	//need to generate 
+	u, err := InitUser("alice", "fubar")
+	if err != nil{
+		t.Error("user init error")
+	}
+	locationUUID, uuidError := uuid.FromBytes(u.LocationKey)
+	if uuidError != nil{
+		t.Error("uuidError error")
+	}
+	hMACKey := u.HMACKey
+	symKey := u.SymKey
+	u2, e := UnmarshCheckFileBlob(locationUUID, hMACKey, symKey)
+	if e != nil{
+		t.Error("unmarshal error", e)
+	}
+	if u2.Username != u.Username{
+		t.Error("two users did not have the same username")
+	}
+}
+*/
+
+/*func TestGetSentinelAndKeys(t *testing.T){
+	//make params user and file name
+	clear()
+	t.Log("Testing getSentinelAndKeys : ")
+	u, err := InitUser("alice", "fubar")
+	if err != nil {
+		// t.Error says the test fails
+		t.Error("Failed to initialize user", err)
+		return
+	}
+	filename := "test"
+	sentinel, sentinelUUID, SymEncKey, HMACKey, err2 := GetSentinelAndKeys(u, filename)
+	fmt.Println(sentinel, sentinelUUID, SymEncKey,HMACKey)
+	if err2 != nil{
+		t.Error("Failed in TestgetSentinelAndKeys", err2)
+		return
+	}
+} */

@@ -8,8 +8,6 @@ import (
 	// You need to add with:
 	// go get github.com/cs161-staff/userlib
 
-	"fmt"
-
 	"github.com/cs161-staff/userlib"
 
 	// Life is much easier with json:  You are
@@ -88,28 +86,34 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 }
 
 /*
-TODO: implement private functions for server use
-Our implemntation makes use of a private data store which holds all data (encrypted) until
-a user requests it, at which point the server fetches the file and decrypts it then re-encrypts
-using the users public key and puts the encrypted file in the public datastore.
 
 classes:
-	Server: thing that holds the datastores and does actions required by the backend
-	File: stores the data, owner and list of users who have access
-
+	User: Holds user data
+	UserBlob: wrapper struct for user which holds HMAC to ensure integrety
+	FileSentinel: Utility struct that contains data about a file 
+	SentinelBlob: Wrapper for sentinel that holds HMAC to ensure integrety
+	FileNode: Node holds file data in a format that is similar to a linked list
+	NodeBlob: Take a guess
+	
 Functions:
-	store_file(owner, shared_with, file_data, file_name):
-	get_file(requester, file_name):
+	User facing:
+		initUser:
+		getUser:
+		StoreFile:
+		LoadFile:
+		AppendFile:
+		ShareFile:
+		ReciveFile:
+		RevokeFile:
+	Helpers:
+		UnmarshCheck: unmashals a wrapper. computes an HMAC of the data within. compares 
+					  reported HMAC with computed HMAC. returns unmarshalled data or error
+		OverWriteHelper: Goes to a sentinel node and removes all data associated with a file
+						from the persistant datastore. Then writes a new file to the same 
+						location as pointed to by the senteiel node with appropriate wrappers
+						and HMACS
 
 */
-
-type Blob struct {
-	JsonData []byte //holds the encrypted data of either a file or user instance
-	DataHMAC []byte //holds the HMAC of the encrypted data
-	//special attributes for dealing with files as opposed to users
-	Owner       User     //not correct data type possibly
-	Shared_with []string //usernames...?
-}
 
 // The structure definition for a user record
 type User struct {
@@ -120,11 +124,59 @@ type User struct {
 	HMACKey     []byte               //will be used as this user's HMACKey
 	PrivateKey  userlib.PKEDecKey    //will be used as this user's private key
 	DigSig      userlib.DSSignKey    //will be used to sign data from the user
-	OwnedFiles  map[string]uuid.UUID //{hashed filename: uuid (location in Datastore)} files owned by this user
-	SharedFiles map[string]uuid.UUID //{hashed filename: uuid (location in Datastore)} files shared with this user
+	OwnedFiles  map[string]string //{hashed filename: uuid (location in Datastore)} files owned by this user
+	SharedFiles map[string]string //{hashed filename: uuid (location in Datastore)} files shared with this user
 	// You can add other fields here if you want...
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
+}
+
+type UserBlob struct {
+	UserData []byte //holds the encrypted data of the user instance
+	HMAC []byte //holds the HMAC of the encrypted user data
+}
+
+/*type File struct {
+	Data []byte
+}
+
+type MetaData struct {
+	Filename string
+	Owner string
+	SharedWith []string
+	AccessToken []byte
+}
+
+type FileBlob struct {
+	FileData []byte
+	DataHMAC []byte
+	MetaData []byte
+	MetaHMAC []byte
+}*/
+
+//Represents the sentinel node of our Linked List for a given file
+type FileSentinel struct {
+	FirstUUID uuid.UUID //points to the first node of the linked list
+	LastUUID uuid.UUID //points to the last node of the linked list (used for appending)
+	//AccessTree Tree //tree representing who has access to the given file
+}
+
+//A blob that encompasses a sentinel and holds its HMAC
+type SentinelBlob struct {
+	Sentinel []byte //holds the sentinel
+	HMAC []byte //holds the HMAC of the sentinel
+}
+
+// Represents a general node in the linked list for a given file
+type FileNode struct {
+	DataUUID uuid.UUID //uuid of the data that this node represents (may be part of a file or an entire file)
+	DataHMAC []byte //HMAC of the encrypted data
+	NextUUID uuid.UUID //uuid of the next node in the linked list
+}
+
+type NodeBlob struct {
+	Node []byte //holds the node
+	NodeHMAC []byte //HMAC of the encrypted node
 }
 
 // This creates a user.  It will only be called once for a user
@@ -153,8 +205,8 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	var userdata User
 	userdataptr = &userdata
 	userdata.Username = username
-	userdata.OwnedFiles = make(map[string]uuid.UUID)
-	userdata.SharedFiles = make(map[string]uuid.UUID) //check this syntax
+	userdata.OwnedFiles = make(map[string]string)
+	userdata.SharedFiles = make(map[string]string) //check this syntax
 	// generate the master key
 	MasterKey := userlib.Argon2Key([]byte(password), []byte(username), 16)
 	userdata.MasterKey = MasterKey
@@ -178,17 +230,16 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 	userlib.KeystoreSet(username+"_PKE", PublicKeyEnc)
 	userlib.KeystoreSet(username+"_DS", PublicKeyDS)
 	// userdata is now complete, now we must instantiate a Blob for this user to store securely in datastore
-	var userblob Blob
+	var userblob UserBlob
 	marshalledData, marshallError := json.Marshal(userdata)
-	userblob.JsonData = userlib.SymEnc(userdata.SymKey, userlib.RandomBytes(16), marshalledData)
-	DataHMAC, MACError := userlib.HMACEval(userdata.HMACKey, userblob.JsonData)
-	userblob.DataHMAC = DataHMAC
+	userblob.UserData = userlib.SymEnc(userdata.SymKey, userlib.RandomBytes(16), marshalledData)
+	DataHMAC, MACError := userlib.HMACEval(userdata.HMACKey, userblob.UserData)
+	userblob.HMAC = DataHMAC
 	//store the blob in Datastore
 	locationUUID, uuidError := uuid.FromBytes(userdata.LocationKey)
 	marshalledBlob, marshallBlobError := json.Marshal(userblob)
 	//check for errors in building blob intance
 	if marshallError != nil || MACError != nil || uuidError != nil || marshallBlobError != nil {
-		fmt.Println(marshallError, MACError, uuidError, marshallBlobError)
 		return nil, errors.New("An error has occured while encrypting the user information.")
 	}
 	userlib.DatastoreSet(locationUUID, marshalledBlob)
@@ -222,11 +273,11 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	}
 	//now check that the user data has not been tampered with
 	//unmarshal the data
-	var unmarshalled Blob
+	var unmarshalled UserBlob
 	marshalError1 := json.Unmarshal(marshalled, &unmarshalled)
 	//unravel unmarshalleded blob object
-	encryptedUser := unmarshalled.JsonData
-	reportedHMAC := unmarshalled.DataHMAC
+	encryptedUser := unmarshalled.UserData
+	reportedHMAC := unmarshalled.HMAC
 	//generate the user's HMACKey
 	HMACKey, HMACError := userlib.HashKDF(userMK, []byte("HMAC"))
 	//compute HMAC from unencryptedUser
@@ -247,18 +298,251 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	return userdataptr, nil
 }
 
+func unmarshCheckUserBlob(id uuid.UUID, EncKey []byte, HMACKey []byte)(user User, err error){
+	var obj UserBlob
+	marshalled, d_err := userlib.DatastoreGet(id)
+	if d_err == false{
+		return user, errors.New("Problem fetching from datastore")
+	}
+	m_error := json.Unmarshal(marshalled, &obj)
+	if m_error != nil{
+		return user, errors.New("Problem Unmarshalling blob")
+	}
+	reportedHMAC := obj.HMAC 
+	//recompute HMAC based on data
+	data := obj.UserData
+	//marshalledData,m_err2 := json.Marshal(data)
+	computedHMAC,hmac_err := userlib.HMACEval(HMACKey, data) //
+	/*if m_err2 != nil{
+		return user, errors.New("problem marshalling error when recomputing HMAC")
+	}*/
+	if hmac_err != nil{
+		return user, errors.New("Error generating HMAC")
+	}
+	
+	if userlib.HMACEqual(computedHMAC,reportedHMAC){
+		return user, errors.New("MACs don't match. Data has been tampered with")
+	}
+	unencryptedMarshalled := userlib.SymDec(EncKey, data)
+	m_error2 := json.Unmarshal(unencryptedMarshalled, &user) 
+	if m_error2 != nil{
+		return user, errors.New("Problem unmarshalling internal structure")
+	}
+	return user, nil
+}
+
+// checks HMAC for the sentinel node, returns unencrypted sentinel node
+func unmarshCheckSentinelBlob(id uuid.UUID, EncKey []byte, HMACKey []byte)(sentinel FileSentinel, err error) {
+	var obj SentinelBlob
+	marshalled, success := userlib.DatastoreGet(id)
+	if !success {
+		return sentinel, errors.New("Problem finding object in datastore")
+	} 
+	MError := json.Unmarshal(marshalled, &obj) 
+	if MError != nil{
+		return sentinel, errors.New("Problem unmarshalling object")
+	}
+	reportedHMAC := obj.HMAC
+	//recompute HMAC based on data
+	data := obj.Sentinel
+	computedHMAC, HMACError := userlib.HMACEval(HMACKey, data)
+	if HMACError != nil {
+		return sentinel, errors.New("Problem recomputing HMAC")
+	}
+	if !userlib.HMACEqual(computedHMAC, reportedHMAC){
+		return sentinel, errors.New("HMACs don't match. Data has been tampered with")
+	}
+	unencryptedMarshalled := userlib.SymDec(EncKey, data)
+	MError3 := json.Unmarshal(unencryptedMarshalled, &sentinel)
+	if MError3 != nil{
+		return sentinel, errors.New("Problem unmarshalling inner structure")
+	}
+	return sentinel, nil	
+}
+
+func unmarshCheckFileBlob(id uuid.UUID, EncKey []byte, HMACKey []byte)(node FileNode, err error){
+	var obj NodeBlob
+	marshalled, DSError := userlib.DatastoreGet(id)
+	if !DSError{
+		return node, errors.New("Problem retriving from the datastore")
+	}
+	MError := json.Unmarshal(marshalled, &obj)
+	if MError != nil{
+		return node, errors.New("Problem unmarshalling outer structure")
+	}
+	reportedHMAC := obj.NodeHMAC
+	//recompute HMAC based on data
+	data := obj.Node
+	computedHMAC,HMACError:= userlib.HMACEval(HMACKey, data)
+	if HMACError != nil {
+		return node, errors.New("Problem generating HMAC")
+	}
+	if !userlib.HMACEqual(reportedHMAC, computedHMAC){
+		return node, errors.New("HMACs don't match. Data has been tampered with")
+	}
+	unencryptedMarshalled := userlib.SymDec(EncKey, data)
+	MError3 := json.Unmarshal(unencryptedMarshalled, &node)
+	if MError3 != nil{
+		return node, errors.New("Problem unmarshalling internal struct")
+	}
+	return node, nil
+}
+
+func checkFile(node FileNode, HMACKey []byte)(curr uuid.UUID, next uuid.UUID, err error){
+	// checks the HMAC of the data to ensure its integrity
+	fileptr := node.DataUUID
+	filedata,DSError := userlib.DatastoreGet(fileptr)
+	if !DSError{
+		return curr, next, errors.New("Problem finding file in datastore")
+	}
+	reportedHMAC := node.DataHMAC
+	computedHMAC,HMACError := userlib.HMACEval(HMACKey, filedata)
+	if HMACError != nil{
+		return curr, next, errors.New("Problem generating HMAC")
+	}
+	if !userlib.HMACEqual(reportedHMAC, computedHMAC){
+		return curr, next, errors.New("File has been tampered with")
+	} else {
+		return node.DataUUID, node.NextUUID, nil
+	}
+}
+
+func overwriteHelper(username string, accessToken string, data []byte)(err error){
+	//pull up sentinel node
+	sentUUID, SymEncKey, HMACKey, genKErr := generateKeys(username, accessToken)
+	if genKErr != nil{
+		return errors.New("Problem generating keys in overwite helper")
+	}
+	sentinel, SentBlobError := unmarshCheckSentinelBlob(sentUUID, SymEncKey, HMACKey)
+	if SentBlobError != nil{
+		return errors.New("Could not retive file")
+	}
+	nodeUUID := sentinel.FirstUUID //points to a FileNode
+	//heres where we actully start removing stuff
+	for (nodeUUID != sentUUID){ //and check that first is in the datastore
+		filenode, filenodeerror := unmarshCheckFileBlob(nodeUUID, SymEncKey, HMACKey)
+		dataID, nextID, fileError := checkFile(filenode, HMACKey)
+		if filenodeerror != nil || fileError != nil{
+			return errors.New("Problem deleting files")
+		}
+		userlib.DatastoreDelete(nodeUUID)
+		nodeUUID = nextID
+		userlib.DatastoreDelete(dataID)
+	}
+	//encrypt data 
+	// need to generate uuids to be stored in datastore (sentUUID will also stored in userdata)
+	dataUUID := uuid.New() //location in Datastore where the file data will be stored
+	nodeUUID = uuid.New() //location in datastore where the node will be stored
+	//encrypt the data and generate its HMAC
+	encryptedData := userlib.SymEnc(SymEncKey, userlib.RandomBytes(16), data)//encrypted data
+	dataHMAC, dataHMACErr := userlib.HMACEval(HMACKey, encryptedData) //HMAC of the encrypted data
+	if dataHMACErr != nil {
+		return errors.New("Error creating HMAC in overwrite helper")
+	}
+	// need to create a new linked list for the file and store it in datastore
+	// start by initializing the sentinel node
+	sentinel.FirstUUID = nodeUUID //points to the node
+	sentinel.LastUUID = nodeUUID //points to the node
+	// next initialize the node 
+	var node FileNode
+	node.DataUUID = dataUUID //points to location where data will be stored
+	node.DataHMAC = dataHMAC //the HMAC of the encrypted data
+	node.NextUUID = sentUUID //points to "next" node (sentinel in this case since its the 'last' node)
+	// now that the sentinel and the node are created, we must marshal and encrypt them
+	sMarsh, sMarshErr := json.Marshal(sentinel) 
+	if sMarshErr != nil{
+		return errors.New("Problem marshalling sentinel in overwrite helper")
+	}
+	encryptedSentinel := userlib.SymEnc(SymEncKey, userlib.RandomBytes(16), sMarsh)//encrypted sentinel
+	nMarsh, nMarshErr := json.Marshal(node)
+	if nMarshErr != nil{
+		return errors.New("Problem Marshalling node in overwrite helper")
+	}
+	encryptedNode := userlib.SymEnc(SymEncKey, userlib.RandomBytes(16), nMarsh)//encrypted node
+	// now initialize the blobs
+	var sBlob SentinelBlob
+	var nBlob NodeBlob
+	sBlob.Sentinel = encryptedSentinel
+	sHMAC, sHMACErr := userlib.HMACEval(HMACKey, encryptedSentinel) //HMAC of the encrypted sentinel node
+	if sHMACErr!=nil{
+		return errors.New("Problem generating HMAC in overwrite error")
+	}
+	sBlob.HMAC = sHMAC
+	nBlob.Node = encryptedNode
+	nHMAC, nHMACErr := userlib.HMACEval(HMACKey, encryptedNode) //HMAC of the encrypted node
+	if nHMACErr != nil{
+		return errors.New("Problem generating HMAC in overwrite error")
+	}
+	nBlob.NodeHMAC = nHMAC
+	// now that everything has been properly created, we must store it in Datastore
+	sBlobMarsh, sbmErr := json.Marshal(sBlob)
+	nBlobMarsh, nbmErr := json.Marshal(nBlob)
+	if sbmErr != nil || nbmErr != nil{
+		return errors.New("Problem marshalling file in overwrite helper")
+	}
+	userlib.DatastoreSet(sentUUID, sBlobMarsh) //store the sentinel blob at sentUUID
+	userlib.DatastoreSet(nodeUUID, nBlobMarsh) //store the node blob at nodeUUID
+	userlib.DatastoreSet(dataUUID, encryptedData) //store the encrypted data at dataUUID
+	return nil
+}
+
 // This stores a file in the datastore.
 //
 // The plaintext of the filename + the plaintext and length of the filename
 // should NOT be revealed to the datastore!
 func (userdata *User) StoreFile(filename string, data []byte) {
-
-	//TODO: This is a toy implementation.
-	UUID, _ := uuid.FromBytes([]byte(filename + userdata.Username)[:16])
-	packaged_data, _ := json.Marshal(data)
-	userlib.DatastoreSet(UUID, packaged_data)
-	//End of toy implementation
-
+	//Check if filename is in owned files
+	if accessToken, ok := userdata.OwnedFiles[filename]; ok {
+		//overwrite this file with data
+		overwriteHelper(userdata.Username, accessToken, data)
+	} else if accessToken2, ok2 := userdata.SharedFiles[filename]; ok2 {
+		//overwrite the file with this data
+		overwriteHelper(userdata.Username, accessToken2, data)
+	} else {
+		// need to generate uuids to be stored in datastore (sentUUID will also stored in userdata)
+		uuidBytes := userlib.RandomBytes(16) // bytes used to generate the sentinel uuid
+		sentUUID, _ := uuid.FromBytes(uuidBytes) //location in Datastore where sentinel node will be stored
+		accessToken := newAccessToken(userdata.Username, uuidBytes) // accessToken for this user and file
+		dataUUID := uuid.New() //location in Datastore where the file data will be stored
+		nodeUUID := uuid.New() //location in datastore where the node will be stored
+		userdata.OwnedFiles[filename] = accessToken // the accessToken can now be accessed from userdata.OwnedFiles[filename]
+		// now we must generate the keys that we need in order to properly encrypt/authenticate
+		_, SymEncKey, HMACKey, _ := generateKeys(userdata.Username, accessToken)
+		//encrypt the data and generate its HMAC
+		encryptedData := userlib.SymEnc(SymEncKey, userlib.RandomBytes(16), data)//encrypted data
+		dataHMAC, _ := userlib.HMACEval(HMACKey, encryptedData) //HMAC of the encrypted data
+		// need to create a new linked list for the file and store it in datastore
+		// start by initializing the sentinel node
+		var fileSent FileSentinel
+		fileSent.FirstUUID = nodeUUID //points to the node
+		fileSent.LastUUID = nodeUUID //points to the node
+		// fileSent.AccessTree = newTree(userdata.Username)
+		// next initialize the node 
+		var node FileNode
+		node.DataUUID = dataUUID //points to location where data will be stored
+		node.DataHMAC = dataHMAC //the HMAC of the encrypted data
+		node.NextUUID = sentUUID //points to "next" node (sentinel in this case since its the 'last' node)
+		// now that the sentinel and the node are created, we must marshal and encrypt them
+		sMarsh, _ := json.Marshal(fileSent) 
+		encryptedSentinel := userlib.SymEnc(SymEncKey, userlib.RandomBytes(16), sMarsh)//encrypted sentinel
+		nMarsh, _ := json.Marshal(node)
+		encryptedNode := userlib.SymEnc(SymEncKey, userlib.RandomBytes(16), nMarsh)//encrypted node
+		// now initialize the blobs
+		var sBlob SentinelBlob
+		var nBlob NodeBlob
+		sBlob.Sentinel = encryptedSentinel
+		sHMAC, _ := userlib.HMACEval(HMACKey, encryptedSentinel) //HMAC of the encrypted sentinel node
+		sBlob.HMAC = sHMAC
+		nBlob.Node = encryptedNode
+		nHMAC, _ := userlib.HMACEval(HMACKey, encryptedNode) //HMAC of the encrypted node
+		nBlob.NodeHMAC = nHMAC
+		// now that everything has been properly created, we must store it in Datastore
+		sBlobMarsh, _ := json.Marshal(sBlob)
+		nBlobMarsh, _ := json.Marshal(nBlob)
+		userlib.DatastoreSet(sentUUID, sBlobMarsh) //store the sentinel blob at sentUUID
+		userlib.DatastoreSet(nodeUUID, nBlobMarsh) //store the node blob at nodeUUID
+		userlib.DatastoreSet(dataUUID, encryptedData) //store the encrypted data at dataUUID
+	}
 	return
 }
 
@@ -268,6 +552,27 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 // existing file, but only whatever additional information and
 // metadata you need.
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
+	/*sentinel, sentinelUUID, SymEncKey, HMACKey, gskErr := GetSentinelAndKeys(userdata, filename) //gets us the sentinel node and its UUID of the file we're trying to load and the keys for HMAC and Encryption (also checks HMAC of sentinel)
+	lastNodeUUID := sentinel.LastUUID //the uuid of the last node of the linked list
+	lastNode, FileBlobError = unmarshCheckFileBlob(nodeUUID, HMACKey, SymEncKey) //last node is the unencrypted last node in the linked list
+	if FileBlobError != nil {
+		return errors.New("Error in unmarshalling the last node")
+	}
+	//let's encrypt our data and generate its HMAC, as well as generate the uuid to store it at
+	encryptedData := userlib.SymEnc(SymEncKey, data)
+	dataHMAC, dHMACErr := userlib.HMACEval(HMACKey, encryptedData)
+	dataUUID := uuid.New()
+	//we must now create a new Node and FileBlob 
+	var node FileNode
+	node.DataUUID = dataUUID
+	node.DataHMAC = dataHMAC
+	node.NextUUID = sentinelUUID //points back to the sentinel since its the last part of the node
+	encryptedNode := userlib.SymEnc(SymEncKey, node)
+	nodeHMAC, nHMACErr := userlib.HMACEval(HMACKey, encryptedNode)
+	var nBlob NodeBlob
+	nBlob.Node = encryptedNode
+	nBlob.HMAC = nodeHMAC*/
+	
 	return
 }
 
@@ -275,18 +580,36 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 //
 // It should give an error if the file is corrupted in any way.
 func (userdata *User) LoadFile(filename string) (data []byte, err error) {
-
-	//TODO: This is a toy implementation.
-	UUID, _ := uuid.FromBytes([]byte(filename + userdata.Username)[:16])
-	packaged_data, ok := userlib.DatastoreGet(UUID)
-	if !ok {
-		return nil, errors.New(strings.ToTitle("File not found!"))
+	sentinel, sentinelUUID, SymEncKey, HMACKey, gskErr := GetSentinelAndKeys(userdata, filename) //gets us the sentinel node and its UUID of the file we're trying to load and the keys for HMAC and Encryption (also checks HMAC of sentinel)
+	if gskErr != nil{
+		return data, errors.New("Problem generating keys in loaddfile()")
 	}
-	json.Unmarshal(packaged_data, &data)
+	nodeUUID := sentinel.FirstUUID //uuid of the first node in the linked list
+	var node FileNode // will be used to store the unencrypted node
+	var FileBlobError error
+	var CheckFileError error
+	var dataUUID uuid.UUID // will be used to store the uuid of the data of the current node
+	var dataToBeAppended []byte // will be used to hold the encrypted data we wish to append to data
+	var ok bool //used to ensure DatastoreGet retrieves data
+	for true {
+		node, FileBlobError = unmarshCheckFileBlob(nodeUUID, SymEncKey, HMACKey)
+		if FileBlobError != nil {
+			return data, errors.New("Problem unmarshalling file")
+		}
+		dataUUID, nodeUUID, CheckFileError = checkFile(node, HMACKey) //stores location of the data for this file node in dataUUID and checks its MAC, sets nodeUUID = node.NextUUID
+		if err != CheckFileError {
+			return data, errors.New("Problem in check file")
+		}
+		dataToBeAppended, ok = userlib.DatastoreGet(dataUUID) // sets dataToBeAppended to be the encrypted data at dataUUID
+		if !ok {
+			return data, errors.New("Uh oh, the data uuid isn't a valid key in datastore ):")
+		}
+		data = append(data, userlib.SymDec(SymEncKey, dataToBeAppended)...)
+		if nodeUUID == sentinelUUID {
+			break
+		}
+	}
 	return data, nil
-	//End of toy implementation
-
-	return
 }
 
 // This creates a sharing record, which is a key pointing to something
@@ -317,4 +640,93 @@ func (userdata *User) ReceiveFile(filename string, sender string,
 // Removes target user's access.
 func (userdata *User) RevokeFile(filename string, target_username string) (err error) {
 	return
+}
+
+//Returns a new access token to be used by the owner of a newly created file
+func newAccessToken(username string, uuidBytes []byte) (accessToken string) {
+	data := append(uuidBytes, userlib.RandomBytes(16)...)
+	accessToken = generateAccessToken(data, username)
+	return accessToken
+}
+
+//creates an accesstoken to be shared with receiver, using the information from sender's access token
+func sharedAccessToken(sender string, senderAccessToken string, recipient string) (accessToken string) {
+	data := parseToken(sender, senderAccessToken)
+	accessToken = generateAccessToken(data, recipient)
+	return accessToken
+}
+
+//helper function to generate an access token given the data to be stored and the username of the token recipient
+func generateAccessToken(data []byte, username string) (accessToken string) {
+	aTK1 := userlib.RandomBytes(16)
+	aTK2 := userlib.RandomBytes(16)
+	key1, _ := userlib.HashKDF(aTK1, []byte(username))
+	key1 = key1[:32]
+	key2, _ := userlib.HashKDF(aTK2, key1)
+	key2 = key2[:32]
+	redBlock := userlib.SymEnc(key2, userlib.RandomBytes(16), data)
+	inner := append(aTK2, redBlock...)
+	blueBlock := userlib.SymEnc(key1, userlib.RandomBytes(16), inner)
+	accessToken = string(append(aTK1, blueBlock...))
+	return accessToken
+}
+
+//parses a token and returns the data within
+func parseToken(username string, accToken string)(data []byte){
+	atk1 := []byte(accToken[:16])
+	blueKey, _ := userlib.HashKDF(atk1, []byte(username))
+	blueKey = blueKey[:32]
+	chunk2 := []byte(accToken[len(atk1):])
+	inner := userlib.SymDec(blueKey, chunk2)
+	atk2 := []byte(inner[:16])
+	redKey, _ := userlib.HashKDF(atk2, blueKey)
+	redKey = redKey[:32]
+	rgdata := inner[len(atk2):]
+	data = userlib.SymDec(redKey,rgdata)
+	return data
+}
+
+//helper function to generate the necessary keys to decrypt/validate a file
+//returns uuid, SymEncKey, HMACKey
+func generateKeys(username string, accessToken string) (id uuid.UUID, SymEncKey []byte, HMACKey []byte, err error) {
+	data := parseToken(username, accessToken)
+	idBytes := data[:16]
+	id, _ = uuid.FromBytes(idBytes)
+	key := data[16:]
+	SymKey, SymKeyErr := userlib.HashKDF(key, append(idBytes, []byte("SymEncKey")...))
+	SymEncKey = SymKey[:32]
+	HKey, HMACKeyErr := userlib.HashKDF(key, append(idBytes, []byte("HMACKey")...))
+	if SymKeyErr != nil || HMACKeyErr != nil{
+		return id, SymEncKey, HMACKey, errors.New("Key generation error")
+	}
+	HMACKey = HKey[:16]
+	return id, SymEncKey, HMACKey, nil
+}
+
+// helper function to execute the initial logic for loading/appending to a file
+func GetSentinelAndKeys(userdata *User, filename string)(sentinel FileSentinel, sentinelUUID uuid.UUID, SymEncKey []byte, HMACKey []byte, err error){
+	//check access and find file info in the user
+	//check if user owns it
+	if accessToken1, ok := userdata.OwnedFiles[filename]; ok {
+		sentinelUUID, SymEncKey, HMACKey, KeyGenError := generateKeys(userdata.Username, accessToken1)
+		if KeyGenError != nil{
+			return sentinel, sentinelUUID, SymEncKey, HMACKey, errors.New("Problem generating keys in getSentinelAndKeys")
+		}
+		sentinel,  SentError := unmarshCheckSentinelBlob(sentinelUUID, SymEncKey, HMACKey)
+		if SentError != nil{
+			return sentinel, sentinelUUID, SymEncKey, HMACKey, errors.New("Problem generating sentinel in getSentinelAndKeys")
+		}
+		return sentinel, sentinelUUID, SymEncKey, HMACKey, nil
+	} else if accessToken2, ok2 := userdata.SharedFiles[filename]; ok2 {
+		sentinelUUID, SymEncKey, HMACKey, KeyGenError := generateKeys(userdata.Username, accessToken2)
+		if KeyGenError != nil{
+			return sentinel, sentinelUUID, SymEncKey, HMACKey, errors.New("Problem generating keys in getSentinelAndKeys")
+		}
+		sentinel,  SentError := unmarshCheckSentinelBlob(sentinelUUID, SymEncKey, HMACKey)
+		if SentError != nil{
+			return sentinel, sentinelUUID, SymEncKey, HMACKey, errors.New("Problem generating sentinel in getSentinelAndKeys")
+		}
+		return sentinel, sentinelUUID, SymEncKey, HMACKey, nil
+	} 
+	return sentinel, sentinelUUID, SymEncKey, HMACKey, errors.New("It does not appear that this user owns this file")
 }
