@@ -13,7 +13,8 @@ import (
 	"testing"
 
 	"github.com/cs161-staff/userlib"
-	_ "github.com/google/uuid"
+	 "github.com/google/uuid"
+	 "fmt"
 )
 
 func clear() {
@@ -68,6 +69,7 @@ func TestGetUser(t *testing.T) {
 	t.Log("Got user", u1)
 }
 
+//given test for basic functionality
 func TestStorage(t *testing.T) {
 	clear()
 	u, err := InitUser("alice", "fubar")
@@ -90,7 +92,63 @@ func TestStorage(t *testing.T) {
 	}
 }
 
-/*
+func TestInitTree(t *testing.T){
+	tree := InitATree("Owner 1")
+	t.Log("Type of tree is ", reflect.TypeOf(tree))
+	if tree.Owner != "Owner 1"{
+		t.Error("Problem initializeing tree")
+	}
+}
+
+func TestTreeAdd(t *testing.T){
+	clear()
+	b := InitATree("Owner")
+	v := InitATree("Owner")
+	t.Log("Testing adding to empty Tree")
+	e := TreeAdd(b, "Owner", "Child 1")
+	v.Access["Owner"] = []string{"Child 1"}
+	v.Access["Child 1"] = make([]string, 0)
+	t.Log("Expected: ", v.Access)
+	t.Log("Actual: ", b.Access)
+	if e != nil || !reflect.DeepEqual(b.Access, v.Access){ //check this again
+		t.Error("Problem adding in treeAdd", e)
+	}
+	return
+}
+
+func TestTreeRemove(t *testing.T){
+	clear()
+
+}
+
+//loads a file that the owner owns
+func TestLoadFileOwned(t *testing.T){
+	clear()
+	t.Log("Testing loading user owned files")
+	//initialize user
+
+}
+//loads a file that has been shared with the user
+func TestLoadFileShared(t *testing.T){
+	clear()
+	t.Log("Testing loading user owned files")
+	//init user
+
+}
+//attempts to load a file that the user doesn't have premission for or doesn't exist
+func TestLoadFileNotFound(t *testing.T){
+	clear()
+	t.Log("Testing loading user owned files")
+	//init user
+}
+//attempts to load  file for user after permission has been revoked
+func TestLoadFileRevoked(t *testing.T){
+	clear()
+	t.Log("Testing loading user owned files")
+	//init user
+}
+
+
 
 func TestInvalidFile(t *testing.T) {
 	clear()
@@ -155,7 +213,6 @@ func TestShare(t *testing.T) {
 
 }
 
-*/
 
 func TestKeyGen(t *testing.T) {
 	clear()
@@ -259,3 +316,64 @@ func TestUnmarshalNodeCheck(t *testing.T){
 		return
 	}
 } */
+
+func TestAppend(t *testing.T) {
+	clear()
+	u, err := InitUser("alice", "fubar")
+	if err != nil {
+		t.Error("Failed to initialize user", err)
+		return
+	}
+
+	v := []byte("This is a test")
+	u.StoreFile("file1", v)
+
+	v2, err2 := u.LoadFile("file1")
+	if err2 != nil {
+		t.Error("Failed to upload and download", err2)
+		return
+	}
+	if !reflect.DeepEqual(v, v2) {
+		t.Error("Downloaded file is not the same", v, v2)
+		return
+	}
+	//now test that appending works
+	app := []byte("Did we pass")
+	vApp := append(v, app...)
+	appErr := u.AppendFile("file1", app)
+	if appErr != nil {
+		t.Error("There was an error whil appending the file", appErr)
+		return
+	}
+	vApp2, appErr2 := u.LoadFile("file1")
+	if appErr2 != nil {
+		t.Error("Failed to upload and download the appended file", appErr2)
+		return
+	}
+	if !reflect.DeepEqual(v, v2) {
+		t.Error("Appended file is not the same", vApp, vApp2)
+		return
+	}
+}
+
+func TestDigSig(t *testing.T) {
+	sk, vk, _ := userlib.DSKeyGen()
+	pubk, _, _ := userlib.PKEKeyGen()
+	msg := []byte("McClain is cute :)")
+	encMsg, _ := userlib.PKEEnc(pubk, msg)
+	sig, _ := userlib.DSSign(sk, encMsg)
+	err := userlib.DSVerify(vk, encMsg, sig)
+	if err != nil {
+		t.Error("Zoinks")
+	}
+}
+
+func TestDeterminism(t *testing.T) {
+	_, _, err := userlib.DSKeyGen()
+	if err != nil {
+		t.Error("Zoinks")
+	}
+	bytes := userlib.RandomBytes(16)
+	fmt.Println(uuid.FromBytes(bytes))
+	fmt.Println(uuid.FromBytes(bytes))
+}
