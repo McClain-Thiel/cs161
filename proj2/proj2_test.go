@@ -13,8 +13,7 @@ import (
 	"testing"
 
 	"github.com/cs161-staff/userlib"
-	 "github.com/google/uuid"
-	 "fmt"
+	_ "github.com/google/uuid"
 )
 
 func clear() {
@@ -220,8 +219,8 @@ func TestKeyGen(t *testing.T) {
 	//data := []byte("this might just not compile")
 	uuidBytes := userlib.RandomBytes(16)
 	//id, _ := uuid.FromBytes(uuidBytes)
-	token := newAccessToken(username, uuidBytes)
-	data := parseToken(username, token)
+	token := NewAccessToken(username, uuidBytes)
+	data := ParseToken(username, token)
 	s := data[:16]//string version of rev_token
 	if string(s) != string(uuidBytes) {
 		t.Error("not the reverse")
@@ -310,7 +309,6 @@ func TestUnmarshalNodeCheck(t *testing.T){
 	}
 	filename := "test"
 	sentinel, sentinelUUID, SymEncKey, HMACKey, err2 := GetSentinelAndKeys(u, filename)
-	fmt.Println(sentinel, sentinelUUID, SymEncKey,HMACKey)
 	if err2 != nil{
 		t.Error("Failed in TestgetSentinelAndKeys", err2)
 		return
@@ -356,24 +354,27 @@ func TestAppend(t *testing.T) {
 	}
 }
 
-func TestDigSig(t *testing.T) {
-	sk, vk, _ := userlib.DSKeyGen()
-	pubk, _, _ := userlib.PKEKeyGen()
-	msg := []byte("McClain is cute :)")
-	encMsg, _ := userlib.PKEEnc(pubk, msg)
-	sig, _ := userlib.DSSign(sk, encMsg)
-	err := userlib.DSVerify(vk, encMsg, sig)
-	if err != nil {
-		t.Error("Zoinks")
+func TestKeyGen2(t *testing.T) {
+	clear()
+	//init access token as done when storing functions
+	rd := uuid.New() //to ge the import error to shut the hell up
+	fmt.Println("impoert erros my ass", rd[:1])
+	username2 := "Recive"
+	username1 := "Send"
+	uuidbytes := userlib.RandomBytes(16)
+	accessToken1 := NewAccessToken(username1, uuidbytes)
+	accessToken2 := sharedAccessToken(username1, accessToken1, username2)
+	fmt.Println(accessToken1, accessToken2)
+	id1, sEnc1, Hmac1, _ := GenerateKeys(username1, accessToken1)
+	id2, sEnc2, Hmac2, _ := GenerateKeys(username2, accessToken2)
+	if id1 != id2 {
+		t.Error("IDs don't match")
+	} 
+	if string(sEnc1) != string(sEnc2) {
+		t.Error("EncKeys don't match")
 	}
-}
-
-func TestDeterminism(t *testing.T) {
-	_, _, err := userlib.DSKeyGen()
-	if err != nil {
-		t.Error("Zoinks")
+	if string(Hmac1) != string(Hmac2) {
+		t.Error("HMACs don't match")
 	}
-	bytes := userlib.RandomBytes(16)
-	fmt.Println(uuid.FromBytes(bytes))
-	fmt.Println(uuid.FromBytes(bytes))
+	//test if the parse and generate key functions undo this and recover 
 }

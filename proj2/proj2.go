@@ -7,7 +7,6 @@ package proj2
 import (
 	// You need to add with:
 	// go get github.com/cs161-staff/userlib
-	"fmt"
 	"github.com/cs161-staff/userlib"
 
 	// Life is much easier with json:  You are
@@ -391,7 +390,7 @@ func checkFile(node FileNode, HMACKey []byte)(curr uuid.UUID, next uuid.UUID, er
 
 func overwriteHelper(username string, accessToken string, data []byte)(err error){
 	//pull up sentinel node
-	sentUUID, SymEncKey, HMACKey, genKErr := generateKeys(username, accessToken)
+	sentUUID, SymEncKey, HMACKey, genKErr := GenerateKeys(username, accessToken)
 	if genKErr != nil{
 		return errors.New("Problem generating keys in overwite helper")
 	}
@@ -492,12 +491,12 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 		// need to generate uuids to be stored in datastore (sentUUID will also stored in userdata)
 		uuidBytes := userlib.RandomBytes(16) // bytes used to generate the sentinel uuid
 		sentUUID, _ := uuid.FromBytes(uuidBytes) //location in Datastore where sentinel node will be stored
-		accessToken := newAccessToken(userdata.Username, uuidBytes) // accessToken for this user and file
+		accessToken := NewAccessToken(userdata.Username, uuidBytes) // accessToken for this user and file
 		dataUUID := uuid.New() //location in Datastore where the file data will be stored
 		nodeUUID := uuid.New() //location in datastore where the node will be stored
 		userdata.OwnedFiles[filename] = accessToken // the accessToken can now be accessed from userdata.OwnedFiles[filename]
 		// now we must generate the keys that we need in order to properly encrypt/authenticate
-		_, SymEncKey, HMACKey, _ := generateKeys(userdata.Username, accessToken)
+		_, SymEncKey, HMACKey, _ := GenerateKeys(userdata.Username, accessToken)
 		//encrypt the data and generate its HMAC
 		encryptedData := userlib.SymEnc(SymEncKey, userlib.RandomBytes(16), data)//encrypted data
 		dataHMAC, _ := userlib.HMACEval(HMACKey, encryptedData) //HMAC of the encrypted data
@@ -728,25 +727,26 @@ func (userdata *User) ShareFile(filename string, recipient string) (magic_string
 	} else {
 		userToken = userdata.SharedFiles[filename]
 	}
-	uuidBytes := parseToken(userdata.Username, userToken)[:16]
+	//data := ParseToken(userdata.Username, userToken)
 	// use uuidBytes to generate a new accesstoken
-	accessToken := []byte(newAccessToken(recipient, uuidBytes))
+	accessToken := []byte(sharedAccessToken(userdata.Username, userToken, recipient))
 	// now all that's left to do is encrypt the token and sign it
 	pubKey, pkOK := userlib.KeystoreGet(recipient+"_PKE")
 	if !pkOK {
 		return "", errors.New("The recipient doesn't have a public key in keystore")
 	}
 	signKey := userdata.DigSig
-	encryptedToken, encErr := userlib.PKEEnc(pubKey, accessToken)
-	if encErr != nil {
-		fmt.Println(len(accessToken))
-		fmt.Println(encErr)
+	encryptedToken1, encErr := userlib.PKEEnc(pubKey, accessToken[:96])
+	encryptedToken2, encErr2 := userlib.PKEEnc(pubKey, accessToken[96:])
+	if encErr != nil || encErr2 != nil {
 		return "", errors.New("There was an error encrypting the access token")
 	}
+	encryptedToken := append(encryptedToken1, encryptedToken2...)
 	signature, sigError := userlib.DSSign(signKey, encryptedToken)
 	if sigError != nil {
 		return "", errors.New("Error signing the accesstoken (probably cuz mcclain was licking my nuts)")
 	}
+	//fmt.Println("LENGTHS", len(encryptedToken))
 	magic_bytes := append(encryptedToken, signature...)
 	magic_string = hex.EncodeToString(magic_bytes)//hex.EncodeToString(encryptedToken) + hex.EncodeToString(signature)
 	//fmt.Println(len(magic_string))
@@ -769,26 +769,27 @@ func (userdata *User) ReceiveFile(filename string, sender string, magic_string s
 		return errors.New("Unable to find the senders verification key")
 	}
 	magic_bytes, _ := hex.DecodeString(magic_string)
-	encryptedAccessToken := magic_bytes[:256]
-	signature := magic_bytes[256:]
+	encryptedAccessToken := magic_bytes[:512]
+	signature := magic_bytes[512:]
 	verificationError := userlib.DSVerify(verifyKey, encryptedAccessToken, signature)
 	if verificationError != nil {
 		return errors.New("Error when verifying signature")
 	}
-	accessTokenBytes, decryptError := userlib.PKEDec(privKey, encryptedAccessToken)
-	if decryptError != nil {
+	//we now decrypt the two halves of the access token
+	accTok1, decErr1 := userlib.PKEDec(privKey, encryptedAccessToken[:256])
+	accTok2, decErr2 := userlib.PKEDec(privKey, encryptedAccessToken[256:])
+	if decErr1 != nil || decErr2 != nil {
 		return errors.New("Error when decrypting access token")
 	}
+	accessTokenBytes := append(accTok1, accTok2...)
 	accessToken := string(accessTokenBytes) // is this corret?
-
 	// now let's confirm that the user still has access in the sentinel tree
-	id, SymEncKey, HMACKey, getKeyErr := generateKeys(userdata.Username, accessToken)
+	id, SymEncKey, HMACKey, getKeyErr := GenerateKeys(userdata.Username, accessToken)
 	if getKeyErr != nil {
 		return errors.New("key gen error in recive file")
 	}
 	sentBlob, succ := userlib.DatastoreGet(id)
 	if !succ {
-		fmt.Println("recived file uuid (sentinal): ", id)
 		return errors.New("Unable to get the sentinel")
 	}
 	var s SentinelBlob
@@ -802,6 +803,7 @@ func (userdata *User) ReceiveFile(filename string, sender string, magic_string s
 	}
 	sentIntegrity := userlib.HMACEqual(s.HMAC, computedHMAC)
 	if !sentIntegrity {
+		//fmt.Println("Computed HMAC", computedHMAC)
 		return errors.New("The sentinel has no integrity")
 	}
 	sentinelMarshalled := userlib.SymDec(SymEncKey, s.Sentinel)
@@ -855,21 +857,21 @@ func (userdata *User) RevokeFile(filename string, target_username string) (err e
 	return nil
 }
 //Returns a new access token to be used by the owner of a newly created file
-func newAccessToken(username string, uuidBytes []byte) (accessToken string) {
+func NewAccessToken(username string, uuidBytes []byte) (accessToken string) {
 	data := append(uuidBytes, userlib.RandomBytes(16)...)
-	accessToken = generateAccessToken(data, username)
+	accessToken = GenerateAccessToken(data, username)
 	return accessToken
 }
 
 //creates an accesstoken to be shared with receiver, using the information from sender's access token
 func sharedAccessToken(sender string, senderAccessToken string, recipient string) (accessToken string) {
-	data := parseToken(sender, senderAccessToken)
-	accessToken = generateAccessToken(data, recipient)
+	data := ParseToken(sender, senderAccessToken)
+	accessToken = GenerateAccessToken(data, recipient)
 	return accessToken
 }
 
 //helper function to generate an access token given the data to be stored and the username of the token recipient
-func generateAccessToken(data []byte, username string) (accessToken string) {
+func GenerateAccessToken(data []byte, username string) (accessToken string) {
 	aTK1 := userlib.RandomBytes(16)
 	aTK2 := userlib.RandomBytes(16)
 	key1, _ := userlib.HashKDF(aTK1, []byte(username))
@@ -899,7 +901,7 @@ func generateAccessToken(data []byte, username string) (accessToken string) {
 }*/
 
 //parses a token and returns the data within
-func parseToken(username string, accToken string)(data []byte){ //i think the problem is here
+func ParseToken(username string, accToken string)(data []byte){ //i think the problem is here
 	accessToken, _ := hex.DecodeString(accToken)
 	atk1 := accessToken[:16]
 	blueKey, _ := userlib.HashKDF(atk1, []byte(username))
@@ -916,9 +918,10 @@ func parseToken(username string, accToken string)(data []byte){ //i think the pr
 
 //helper function to generate the necessary keys to decrypt/validate a file
 //returns uuid, SymEncKey, HMACKey
-func generateKeys(username string, accessToken string) (id uuid.UUID, SymEncKey []byte, HMACKey []byte, err error) {
-	fmt.Println("Access token in generate keys: ", accessToken)
-	data := parseToken(username, accessToken)
+func GenerateKeys(username string, accessToken string) (id uuid.UUID, SymEncKey []byte, HMACKey []byte, err error) {
+	//fmt.Println("Access token in generate keys: ", username, accessToken)
+	//fmt.Println()
+	data := ParseToken(username, accessToken)
 	//fmt.Println("Data", data)
 	idBytes := data[:16]
 	id, _ = uuid.FromBytes(idBytes) //is this correct?
@@ -938,7 +941,7 @@ func GetSentinelAndKeys(userdata *User, filename string)(sentinel FileSentinel, 
 	//check access and find file info in the user
 	//check if user owns it
 	if accessToken1, ok := userdata.OwnedFiles[filename]; ok {
-		sentinelUUID, SymEncKey, HMACKey, KeyGenError := generateKeys(userdata.Username, accessToken1)
+		sentinelUUID, SymEncKey, HMACKey, KeyGenError := GenerateKeys(userdata.Username, accessToken1)
 		if KeyGenError != nil{
 			return sentinel, sentinelUUID, SymEncKey, HMACKey, errors.New("Problem generating keys in getSentinelAndKeys")
 		}
@@ -948,7 +951,7 @@ func GetSentinelAndKeys(userdata *User, filename string)(sentinel FileSentinel, 
 		}
 		return sentinel, sentinelUUID, SymEncKey, HMACKey, nil
 	} else if accessToken2, ok2 := userdata.SharedFiles[filename]; ok2 {
-		sentinelUUID, SymEncKey, HMACKey, KeyGenError := generateKeys(userdata.Username, accessToken2)
+		sentinelUUID, SymEncKey, HMACKey, KeyGenError := GenerateKeys(userdata.Username, accessToken2)
 		if KeyGenError != nil{
 			return sentinel, sentinelUUID, SymEncKey, HMACKey, errors.New("Problem generating keys in getSentinelAndKeys")
 		}
