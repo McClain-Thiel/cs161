@@ -36,9 +36,6 @@ import (
 	// see someUsefulThings() below:
 )
 
-// hardcoded master key used for the
-const MASTER_KEY string = "jaredandmcclain!"
-
 // This serves two purposes:
 // a) It shows you some useful primitives, and
 // b) it suppresses warnings for items not being imported.
@@ -390,7 +387,7 @@ func checkFile(node FileNode, HMACKey []byte)(curr uuid.UUID, next uuid.UUID, er
 
 func overwriteHelper(username string, accessToken string, data []byte)(err error){
 	//pull up sentinel node
-	sentUUID, SymEncKey, HMACKey, genKErr := GenerateKeys(username, accessToken)
+	sentUUID, SymEncKey, HMACKey, genKErr := generateKeys(username, accessToken)
 	if genKErr != nil{
 		return errors.New("Problem generating keys in overwite helper")
 	}
@@ -476,6 +473,8 @@ func overwriteHelper(username string, accessToken string, data []byte)(err error
 // The plaintext of the filename + the plaintext and length of the filename
 // should NOT be revealed to the datastore!
 func (userdata *User) StoreFile(filename string, data []byte) {
+	filename = filename + "_" //ensures stored filename isn't empty (allows us to use as key in map)
+	data = append(data, []byte("____")...) //ensures stored data isn't empty (for encryption purposes)
 	//Check if filename is in owned files
 	if accessToken, ok := userdata.OwnedFiles[filename]; ok {
 		//overwrite this file with data
@@ -491,12 +490,12 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 		// need to generate uuids to be stored in datastore (sentUUID will also stored in userdata)
 		uuidBytes := userlib.RandomBytes(16) // bytes used to generate the sentinel uuid
 		sentUUID, _ := uuid.FromBytes(uuidBytes) //location in Datastore where sentinel node will be stored
-		accessToken := NewAccessToken(userdata.Username, uuidBytes) // accessToken for this user and file
+		accessToken := newAccessToken(userdata.Username, uuidBytes) // accessToken for this user and file
 		dataUUID := uuid.New() //location in Datastore where the file data will be stored
 		nodeUUID := uuid.New() //location in datastore where the node will be stored
 		userdata.OwnedFiles[filename] = accessToken // the accessToken can now be accessed from userdata.OwnedFiles[filename]
 		// now we must generate the keys that we need in order to properly encrypt/authenticate
-		_, SymEncKey, HMACKey, _ := GenerateKeys(userdata.Username, accessToken)
+		_, SymEncKey, HMACKey, _ := generateKeys(userdata.Username, accessToken)
 		//encrypt the data and generate its HMAC
 		encryptedData := userlib.SymEnc(SymEncKey, userlib.RandomBytes(16), data)//encrypted data
 		dataHMAC, _ := userlib.HMACEval(HMACKey, encryptedData) //HMAC of the encrypted data
@@ -505,7 +504,7 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 		var fileSent FileSentinel
 		fileSent.FirstUUID = nodeUUID //points to the node
 		fileSent.LastUUID = nodeUUID //points to the node
-		fileSent.Tree = InitATree(userdata.Username)
+		fileSent.Tree = initATree(userdata.Username)
 		// next initialize the node 
 		var node FileNode
 		node.DataUUID = dataUUID //points to location where data will be stored
@@ -540,7 +539,9 @@ func (userdata *User) StoreFile(filename string, data []byte) {
 // existing file, but only whatever additional information and
 // metadata you need.
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
-	sentinel, sentinelUUID, SymEncKey, HMACKey, gskErr := GetSentinelAndKeys(userdata, filename) //gets us the sentinel node and its UUID of the file we're trying to load and the keys for HMAC and Encryption (also checks HMAC of sentinel)
+	filename = filename + "_" //ensures stored filename isn't empty (allows us to use as key in map)
+	data = append(data, []byte("____")...) //ensures stored data isn't empty (for encryption purposes)
+	sentinel, sentinelUUID, SymEncKey, HMACKey, gskErr := getSentinelAndKeys(userdata, filename) //gets us the sentinel node and its UUID of the file we're trying to load and the keys for HMAC and Encryption (also checks HMAC of sentinel)
 	if gskErr != nil {
 		return errors.New("Error in generating the sentinel")
 	}
@@ -628,11 +629,13 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 //
 // It should give an error if the file is corrupted in any way.
 func (userdata *User) LoadFile(filename string) (data []byte, err error) {
-	sentinel, sentinelUUID, SymEncKey, HMACKey, gskErr := GetSentinelAndKeys(userdata, filename) //gets us the sentinel node and its UUID of the file we're trying to load and the keys for HMAC and Encryption (also checks HMAC of sentinel)
+	filename = filename + "_" //ensures stored filename isn't empty (allows us to use as key in map)
+	sentinel, sentinelUUID, SymEncKey, HMACKey, gskErr := getSentinelAndKeys(userdata, filename) //gets us the sentinel node and its UUID of the file we're trying to load and the keys for HMAC and Encryption (also checks HMAC of sentinel)
 	//check if user has access accoreding to the sentinel
-	if _,ok := sentinel.Tree.Access[filename]; !ok{
-		//sentinel says we dont have access so we delete from users dhared files
+	if _,ok := sentinel.Tree.Access[userdata.Username]; !ok{
+		//sentinel says we dont have access so we delete from users shared files
 		delete(userdata.SharedFiles, filename)
+		return nil, errors.New("You no longer have access")
 	}
 	if gskErr != nil{
 		return data, errors.New("Problem generating keys in loaddfile()")
@@ -658,6 +661,7 @@ func (userdata *User) LoadFile(filename string) (data []byte, err error) {
 			return data, errors.New("Uh oh, the data uuid isn't a valid key in datastore ):")
 		}
 		data = append(data, userlib.SymDec(SymEncKey, dataToBeAppended)...)
+		data = data[:len(data)-4] // removes the '____' at the end of each chunk of data
 		if nodeUUID == sentinelUUID {
 			break
 		}
@@ -683,7 +687,11 @@ func (userdata *User) ShareFile(filename string, recipient string) (magic_string
 	} else if _, ok2 := userdata.OwnedFiles[filename]; !ok2 {
 		return "", errors.New("You do not have access to the file that you are trying to share")
 	}*/
-	sentinel, sentinelUUID, SymEncKey, HMACKey, gskErr := GetSentinelAndKeys(userdata, filename) //gets us the sentinel node and its UUID of the file we're trying to load and the keys for HMAC and Encryption (also checks HMAC of sentinel)
+	if !checkIfUserExists(recipient) {
+		return "", errors.New("The user who you are trying to share this file with does not exist")
+	}
+	filename = filename + "_" //ensures stored filename isn't empty (allows us to use as key in map)
+	sentinel, sentinelUUID, SymEncKey, HMACKey, gskErr := getSentinelAndKeys(userdata, filename) //gets us the sentinel node and its UUID of the file we're trying to load and the keys for HMAC and Encryption (also checks HMAC of sentinel)
 	if gskErr != nil{
 		return "", errors.New("Problem generating keys in ShareFile")
 	}
@@ -694,7 +702,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (magic_string
 		return "", errors.New("You do not have access to the file that you are trying to share")
 	}
 	//add access to tree
-	treeAddErr := TreeAdd(sentinel.Tree, userdata.Username, recipient)
+	treeAddErr := treeAdd(sentinel.Tree, userdata.Username, recipient)
 	if treeAddErr != nil {
 		return "", treeAddErr
 	}
@@ -759,6 +767,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (magic_string
 // it is authentically from the sender.
 func (userdata *User) ReceiveFile(filename string, sender string, magic_string string) error {
 	//we must first verify the magic_string and decrypt the accesstoken from it
+	filename = filename + "_" //ensures stored filename isn't empty (allows us to use as key in map)
 	if _, ok := userdata.OwnedFiles[filename]; ok {
 		//the user already has a file with this name
 		return errors.New("A file with this filename already exists for this user.")
@@ -769,6 +778,9 @@ func (userdata *User) ReceiveFile(filename string, sender string, magic_string s
 		return errors.New("Unable to find the senders verification key")
 	}
 	magic_bytes, _ := hex.DecodeString(magic_string)
+	if len(magic_bytes) < 512 {
+		return errors.New("Save me from a panic")
+	}
 	encryptedAccessToken := magic_bytes[:512]
 	signature := magic_bytes[512:]
 	verificationError := userlib.DSVerify(verifyKey, encryptedAccessToken, signature)
@@ -784,7 +796,7 @@ func (userdata *User) ReceiveFile(filename string, sender string, magic_string s
 	accessTokenBytes := append(accTok1, accTok2...)
 	accessToken := string(accessTokenBytes) // is this corret?
 	// now let's confirm that the user still has access in the sentinel tree
-	id, SymEncKey, HMACKey, getKeyErr := GenerateKeys(userdata.Username, accessToken)
+	id, SymEncKey, HMACKey, getKeyErr := generateKeys(userdata.Username, accessToken)
 	if getKeyErr != nil {
 		return errors.New("key gen error in recive file")
 	}
@@ -812,11 +824,6 @@ func (userdata *User) ReceiveFile(filename string, sender string, magic_string s
 	if err != nil{
 		return errors.New("problem unmarshalling inner struct in recive file")
 	}
-	/*sentinel, _, _, _, gskErr := GetSentinelAndKeys(userdata, filename) //gets us the sentinel node and its UUID of the file we're trying to load and the keys for HMAC and Encryption (also checks HMAC of sentinel)
-	if gskErr != nil{
-		fmt.Println(gskErr)
-		return errors.New("Problem generating keys in ReceiveFile")
-	}*/
 	_, hasAccess := sent.Tree.Access[userdata.Username]
 	if hasAccess { // if the user has access
 		userdata.SharedFiles[filename] = accessToken
@@ -826,13 +833,17 @@ func (userdata *User) ReceiveFile(filename string, sender string, magic_string s
 
 // Removes target user's access.
 func (userdata *User) RevokeFile(filename string, target_username string) (err error) {
+	if !checkIfUserExists(target_username) {
+		return errors.New("The user whose access you are trying to revoke does not exist")
+	}
 	//pull up sentinel for the associated owned file
-	sentinel, sentinelUUID, SymEncKey, HMACKey, gskErr := GetSentinelAndKeys(userdata, filename) //gets us the sentinel node and its UUID of the file we're trying to load and the keys for HMAC and Encryption (also checks HMAC of sentinel)
+	filename = filename + "_" //ensures stored filename isn't empty (allows us to use as key in map)
+	sentinel, sentinelUUID, SymEncKey, HMACKey, gskErr := getSentinelAndKeys(userdata, filename) //gets us the sentinel node and its UUID of the file we're trying to load and the keys for HMAC and Encryption (also checks HMAC of sentinel)
 	if gskErr != nil{
 		return errors.New("Problem generating keys in RevokeFile")
 	}
 	//remove the user from the access tree
-	UserRemoveError := TreeRemove(sentinel.Tree, target_username, userdata.Username)
+	UserRemoveError := treeRemove(sentinel.Tree, target_username, userdata.Username)
 	if UserRemoveError != nil{
 		return errors.New("Problem when removing user from tree")
 	}
@@ -856,22 +867,29 @@ func (userdata *User) RevokeFile(filename string, target_username string) (err e
 	userlib.DatastoreSet(sentinelUUID, sMarsh)
 	return nil
 }
+
+//helper function that checks if a given username exists
+func checkIfUserExists(username string) (exists bool){
+	_, exists = userlib.KeystoreGet(username+"_PKE")
+	return exists
+}
+
 //Returns a new access token to be used by the owner of a newly created file
-func NewAccessToken(username string, uuidBytes []byte) (accessToken string) {
+func newAccessToken(username string, uuidBytes []byte) (accessToken string) {
 	data := append(uuidBytes, userlib.RandomBytes(16)...)
-	accessToken = GenerateAccessToken(data, username)
+	accessToken = generateAccessToken(data, username)
 	return accessToken
 }
 
 //creates an accesstoken to be shared with receiver, using the information from sender's access token
 func sharedAccessToken(sender string, senderAccessToken string, recipient string) (accessToken string) {
-	data := ParseToken(sender, senderAccessToken)
-	accessToken = GenerateAccessToken(data, recipient)
+	data := parseToken(sender, senderAccessToken)
+	accessToken = generateAccessToken(data, recipient)
 	return accessToken
 }
 
 //helper function to generate an access token given the data to be stored and the username of the token recipient
-func GenerateAccessToken(data []byte, username string) (accessToken string) {
+func generateAccessToken(data []byte, username string) (accessToken string) {
 	aTK1 := userlib.RandomBytes(16)
 	aTK2 := userlib.RandomBytes(16)
 	key1, _ := userlib.HashKDF(aTK1, []byte(username))
@@ -901,7 +919,7 @@ func GenerateAccessToken(data []byte, username string) (accessToken string) {
 }*/
 
 //parses a token and returns the data within
-func ParseToken(username string, accToken string)(data []byte){ //i think the problem is here
+func parseToken(username string, accToken string)(data []byte){ //i think the problem is here
 	accessToken, _ := hex.DecodeString(accToken)
 	atk1 := accessToken[:16]
 	blueKey, _ := userlib.HashKDF(atk1, []byte(username))
@@ -918,10 +936,10 @@ func ParseToken(username string, accToken string)(data []byte){ //i think the pr
 
 //helper function to generate the necessary keys to decrypt/validate a file
 //returns uuid, SymEncKey, HMACKey
-func GenerateKeys(username string, accessToken string) (id uuid.UUID, SymEncKey []byte, HMACKey []byte, err error) {
+func generateKeys(username string, accessToken string) (id uuid.UUID, SymEncKey []byte, HMACKey []byte, err error) {
 	//fmt.Println("Access token in generate keys: ", username, accessToken)
 	//fmt.Println()
-	data := ParseToken(username, accessToken)
+	data := parseToken(username, accessToken)
 	//fmt.Println("Data", data)
 	idBytes := data[:16]
 	id, _ = uuid.FromBytes(idBytes) //is this correct?
@@ -937,11 +955,11 @@ func GenerateKeys(username string, accessToken string) (id uuid.UUID, SymEncKey 
 }
 
 // helper function to execute the initial logic for loading/appending to a file
-func GetSentinelAndKeys(userdata *User, filename string)(sentinel FileSentinel, sentinelUUID uuid.UUID, SymEncKey []byte, HMACKey []byte, err error){
+func getSentinelAndKeys(userdata *User, filename string)(sentinel FileSentinel, sentinelUUID uuid.UUID, SymEncKey []byte, HMACKey []byte, err error){
 	//check access and find file info in the user
 	//check if user owns it
 	if accessToken1, ok := userdata.OwnedFiles[filename]; ok {
-		sentinelUUID, SymEncKey, HMACKey, KeyGenError := GenerateKeys(userdata.Username, accessToken1)
+		sentinelUUID, SymEncKey, HMACKey, KeyGenError := generateKeys(userdata.Username, accessToken1)
 		if KeyGenError != nil{
 			return sentinel, sentinelUUID, SymEncKey, HMACKey, errors.New("Problem generating keys in getSentinelAndKeys")
 		}
@@ -951,7 +969,7 @@ func GetSentinelAndKeys(userdata *User, filename string)(sentinel FileSentinel, 
 		}
 		return sentinel, sentinelUUID, SymEncKey, HMACKey, nil
 	} else if accessToken2, ok2 := userdata.SharedFiles[filename]; ok2 {
-		sentinelUUID, SymEncKey, HMACKey, KeyGenError := GenerateKeys(userdata.Username, accessToken2)
+		sentinelUUID, SymEncKey, HMACKey, KeyGenError := generateKeys(userdata.Username, accessToken2)
 		if KeyGenError != nil{
 			return sentinel, sentinelUUID, SymEncKey, HMACKey, errors.New("Problem generating keys in getSentinelAndKeys")
 		}
@@ -970,7 +988,7 @@ type AccessTree struct {
 	Access map[string][]string
 }
 
-func InitATree(owner string)(t AccessTree){
+func initATree(owner string)(t AccessTree){
 	t.Owner = owner
 	t.Access = make(map[string][]string)
 	t.Access[owner] = make([]string, 0)
@@ -978,7 +996,7 @@ func InitATree(owner string)(t AccessTree){
 }
 
 //function to add a user to the access tree
-func TreeAdd(t AccessTree, parent string, child string) (err error){
+func treeAdd(t AccessTree, parent string, child string) (err error){
 	//check that they have file access
 	tree := t.Access
 	if _, ok := tree[parent]; !ok {
@@ -991,11 +1009,17 @@ func TreeAdd(t AccessTree, parent string, child string) (err error){
 }
 
 //function to remove a user from the access tree
-func TreeRemove(t AccessTree, toRemove string, caller string)(err error){
+func treeRemove(t AccessTree, toRemove string, caller string)(err error){
 	if t.Owner != caller {
 		return errors.New("Only the owner of a file can revoke access to it")
 	}
-	return TreeRemoveHelper(t.Access, toRemove)
+	direct_children := t.Access[caller]
+	for _, child := range direct_children {
+		if child == toRemove {
+			return treeRemoveHelper(t.Access, toRemove)
+		}
+	}
+	return errors.New("Only direct children can be removed from the access tree")
 }
 
 /*
@@ -1003,14 +1027,14 @@ func remove(slice []int, s int) []int {
     return append(slice[:s], slice[s+1:]...)
 }*/
 
-func TreeRemoveHelper(tree map[string][]string, toRemove string) (err error) {
+func treeRemoveHelper(tree map[string][]string, toRemove string) (err error) {
 	if _, ok := tree[toRemove]; !ok {
 		return errors.New("User not found in access tree")
 	}
 	children, _ := tree[toRemove]
 	delete(tree, toRemove)
 	for _, username := range children { //what happens when this is empty?
-		e:=TreeRemoveHelper(tree, username)
+		e:=treeRemoveHelper(tree, username)
 		if e != nil{
 			return errors.New("Problem in remove tree")
 		}
