@@ -85,22 +85,22 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 
 classes:
 	User: Holds user data
-	UserBlob: wrapper struct for user which holds HMAC to ensure integrety
+	UserBlob: wrapper struct for user which holds HMAC to ensure integrity
 	FileSentinel: Utility struct that contains data about a file 
-	SentinelBlob: Wrapper for sentinel that holds HMAC to ensure integrety
+	SentinelBlob: Wrapper for sentinel that holds HMAC to ensure integrity
 	FileNode: Node holds file data in a format that is similar to a linked list
 	NodeBlob: Take a guess
 	
 Functions:
 	User facing:
-		initUser:
-		getUser:
-		StoreFile:
-		LoadFile:
-		AppendFile:
-		ShareFile:
-		ReciveFile:
-		RevokeFile:
+		initUser: initializes a new user with username and password as parameters
+		getUser: effectively logging in. same parameters
+		StoreFile: a user instance can securely store an encrypted file on an insecure database
+		LoadFile: loads the file the stored
+		AppendFile: efficiently appends to a stored file
+		ShareFile: give edit access to another user
+		ReciveFile: complement function to share file. target used must call this after a file is shared to access it 
+		RevokeFile: revokes access from a used whom a file has been shared with
 	Helpers:
 		UnmarshCheck: unmashals a wrapper. computes an HMAC of the data within. compares 
 					  reported HMAC with computed HMAC. returns unmarshalled data or error
